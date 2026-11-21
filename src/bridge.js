@@ -18,6 +18,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { Connection, ErrorCodes, RpcError } from './jsonrpc.js';
 import { DEFAULT_IGNORES, DEFAULT_MAX_FILE_BYTES, diffSnapshot, makeIgnoreMatcher, takeSnapshot } from './snapshot.js';
 import { promptToText, stripAnsi } from './text.js';
+import { watchSession } from './watch.js';
 
 export const PROTOCOL_VERSION = 1;
 const PROMPT_PLACEHOLDER = '{prompt}';
@@ -33,6 +34,9 @@ const PROMPT_PLACEHOLDER = '{prompt}';
  * @property {number}   [syncTimeoutMs]  how long to wait for the editor to reload a reverted file
  * @property {string}   [backupDir]      where contents of deleted files are saved
  * @property {string}   [title]          display name shown by the client
+ * @property {boolean}  [watch]          watch mode: review changes made by any process, no wrapped command
+ * @property {number}   [intervalMs]     watch mode polling interval
+ * @property {string|null} [openWith]    command used to open changed files (`<cmd> <path>:<line>`), null = off
  * @property {string}   [version]
  */
 
@@ -51,8 +55,18 @@ export function buildArgv(command, nextTurnArgs, turn, prompt) {
   return argv.map((a) => a.split(PROMPT_PLACEHOLDER).join(prompt));
 }
 
-const normalize = (s) => s.replace(/^﻿/, '').replace(/\r\n/g, '\n');
+const normalize = (s) => s.replace(/^\ufeff/, '').replace(/\r\n/g, '\n');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 1-based line of the first difference between two texts (for jumping to the change). */
+export function firstChangedLine(before, after) {
+  if (before === null || after === null) return 1;
+  const a = before.split('\n');
+  const b = after.split('\n');
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return Math.min(i, Math.max(b.length - 1, 0)) + 1;
+}
 
 export class Bridge {
   /**
@@ -70,6 +84,9 @@ export class Bridge {
       backupDir: defaultBackupDir(),
       title: 'CLI agent (reviewed)',
       version: '0.0.0',
+      watch: false,
+      intervalMs: 700,
+      openWith: null,
       ...config,
     };
     this.log = log;
@@ -106,7 +123,7 @@ export class Bridge {
       throw new RpcError(ErrorCodes.INVALID_PARAMS, 'session/new requires an absolute cwd');
     }
     const id = `sess_${randomUUID()}`;
-    this.sessions.set(id, { id, cwd, turns: 0, busy: false, cancelled: false, child: null });
+    this.sessions.set(id, { id, cwd, turns: 0, busy: false, cancelled: false, child: null, wake: null });
     return { sessionId: id };
   }
 
@@ -130,6 +147,10 @@ export class Bridge {
     s.busy = true;
     s.cancelled = false;
     try {
+      if (this.config.watch) {
+        await watchSession(this, s);
+        return { stopReason: 'cancelled' };
+      }
       const text = promptToText(prompt, s.cwd);
       if (!text) {
         this.say(s, 'Empty prompt, nothing to do.');
@@ -155,6 +176,7 @@ export class Bridge {
     if (!s?.busy) return;
     s.cancelled = true;
     this.killChild(s);
+    s.wake?.();
   }
 
   killChild(s) {
@@ -293,7 +315,8 @@ export class Bridge {
     const diff = { type: 'diff', path: abs, oldText: c.type === 'created' ? null : c.beforeText, newText: c.afterText };
     if (!canWrite) {
       this.update(s, { sessionUpdate: 'tool_call', ...base, status: 'completed', content: [diff] });
-      return;
+      this.openInEditor(abs, firstChangedLine(c.beforeText, c.afterText));
+      return true;
     }
 
     this.update(s, { sessionUpdate: 'tool_call', ...base, status: 'in_progress', content: [diff] });
@@ -306,6 +329,8 @@ export class Bridge {
       // 3. Re-apply the agent's version through the editor: this is what makes it reviewable.
       await this.conn.request('fs/write_text_file', { sessionId: s.id, path: abs, content: c.afterText });
       this.update(s, { sessionUpdate: 'tool_call_update', toolCallId, status: 'completed' });
+      this.openInEditor(abs, firstChangedLine(c.beforeText, c.afterText));
+      return true;
     } catch (err) {
       // Never lose the agent's work: put its version back on disk directly.
       await fs.mkdir(path.dirname(abs), { recursive: true });
@@ -316,6 +341,20 @@ export class Bridge {
         status: 'failed',
         content: [diff, ...textContent(`Could not route through the editor (${err.message}); change left on disk.`)],
       });
+      return false;
+    }
+  }
+
+  /** Open a changed file in the editor via its CLI (e.g. `zeditor path:line`). Fire and forget. */
+  openInEditor(abs, line) {
+    const cmd = this.config.openWith;
+    if (!cmd) return;
+    try {
+      const child = spawn(cmd, [`${abs}:${line}`], { stdio: 'ignore', detached: true });
+      child.on('error', (err) => this.log(`could not run ${cmd}:`, err.message));
+      child.unref();
+    } catch (err) {
+      this.log(`could not run ${cmd}:`, err.message);
     }
   }
 

@@ -2,7 +2,8 @@
 // CLI entry point. Zed (or any ACP client) launches this over stdio.
 // Stdout is reserved for ACP messages: all logging goes to stderr.
 
-import { readFileSync } from 'node:fs';
+import { accessSync, constants, readFileSync } from 'node:fs';
+import path from 'node:path';
 import { Bridge, defaultBackupDir } from '../src/bridge.js';
 
 console.log = console.error; // guard: a stray console.log must never corrupt the protocol stream
@@ -15,12 +16,23 @@ Run a CLI coding agent as an ACP agent so every file it changes is reviewed
 in the editor with inline Keep / Reject diffs.
 
 Usage:
-  acp-review-bridge [options] -- <agent command> [agent args...]
+  acp-review-bridge [options] -- <agent command> [agent args...]   (run mode)
+  acp-review-bridge --watch [options]                              (watch mode)
 
-The literal argument {prompt} is replaced with the user's prompt. If it is
-absent, the prompt is written to the agent's stdin instead.
+Run mode: each prompt runs the agent command once. The literal argument
+{prompt} is replaced with the user's prompt; if it is absent, the prompt is
+written to the agent's stdin instead.
+
+Watch mode: send any message to start watching the project. Every change made
+by any process (an agent in your terminal, a script, ...) is opened in the
+editor and shown for review. Press Stop to end.
 
 Options:
+  --watch                  Watch mode (see above); no agent command needed
+  --interval <ms>          Watch mode polling interval (default: 700)
+  --open-with <command>    Open each changed file with "<command> <path>:<line>"
+                           (default: zeditor or zed if found on PATH)
+  --no-open                Don't open changed files
   --name <title>           Display name shown in the editor (default: "<command> (reviewed)")
   --next-turn-arg <arg>    Extra argument for the 2nd+ prompt of a session, inserted
                            before {prompt} (repeatable), e.g. --next-turn-arg --continue
@@ -34,8 +46,13 @@ Options:
   -h, --help               Show this help
   -v, --version            Show version
 
-Example (Zed settings.json):
+Examples (Zed settings.json):
   "agent_servers": {
+    "Watch changes": {
+      "type": "custom",
+      "command": "npx",
+      "args": ["-y", "github:Sasivisvan/acp-review-bridge", "--watch"]
+    },
     "Aider (reviewed)": {
       "type": "custom",
       "command": "npx",
@@ -50,9 +67,25 @@ function fail(msg) {
   process.exit(2);
 }
 
+/** Find an executable on PATH, like `which`. */
+function which(name) {
+  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, name);
+    try {
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      /* keep looking */
+    }
+  }
+  return null;
+}
+
 function parse(argv) {
   const config = { nextTurnArgs: [], ignores: [], version: pkg.version };
   let verbose = false;
+  let open = true;
   let i = 0;
   const value = (flag) => {
     if (i + 1 >= argv.length) fail(`${flag} needs a value`);
@@ -75,6 +108,21 @@ function parse(argv) {
         process.stdout.write(`${pkg.version}\n`);
         process.exit(0);
       // falls through (unreachable)
+      case '--watch':
+        config.watch = true;
+        break;
+      case '--interval': {
+        const ms = Number(value(a));
+        if (!(ms >= 50)) fail('--interval must be at least 50 ms');
+        config.intervalMs = ms;
+        break;
+      }
+      case '--open-with':
+        config.openWith = value(a);
+        break;
+      case '--no-open':
+        open = false;
+        break;
       case '--name':
         config.title = value(a);
         break;
@@ -115,8 +163,14 @@ function parse(argv) {
         fail(`unknown option ${a} (put the agent command after "--")`);
     }
   }
-  if (!config.command?.length) fail('missing agent command after "--"');
-  config.title ??= `${config.command[0].split(/[\\/]/).pop()} (reviewed)`;
+  if (config.watch) {
+    if (config.command?.length) fail('--watch does not take an agent command');
+    config.title ??= 'Watch changes';
+  } else {
+    if (!config.command?.length) fail('missing agent command after "--" (or use --watch)');
+    config.title ??= `${path.basename(config.command[0])} (reviewed)`;
+  }
+  config.openWith = open ? (config.openWith ?? which('zeditor') ?? which('zed')) : null;
   return { config, verbose };
 }
 

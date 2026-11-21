@@ -9,26 +9,41 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Connection } from '../src/jsonrpc.js';
-import { buildArgv } from '../src/bridge.js';
+import { buildArgv, firstChangedLine } from '../src/bridge.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(here, '..', 'bin', 'acp-review-bridge.js');
 const FAKE = path.join(here, 'fixtures', 'fake-agent.js');
+const OPENER = path.join(here, 'fixtures', 'fake-opener.js');
 
-function setup({ fs = true, agentArgs = ['{prompt}'], extra = [] } = {}) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function waitFor(cond, what = 'condition', timeoutMs = 8000) {
+  const end = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await sleep(25);
+  }
+}
+
+function setup({ fs = true, agentArgs = ['{prompt}'], extra = [], watch = false, openLog = null } = {}) {
   const cwd = mkdtempSync(path.join(tmpdir(), 'arb-e2e-'));
   const backupDir = mkdtempSync(path.join(tmpdir(), 'arb-bak-'));
   writeFileSync(path.join(cwd, 'edit.txt'), 'one\ntwo\n');
   writeFileSync(path.join(cwd, 'gone.txt'), 'delete me\n');
 
-  const proc = spawn(process.execPath, [BIN, '--backup-dir', backupDir, ...extra, '--', process.execPath, FAKE, ...agentArgs], {
+  const args = [BIN, '--backup-dir', backupDir, ...(openLog ? ['--open-with', OPENER] : ['--no-open']), ...extra];
+  if (watch) args.push('--watch');
+  else args.push('--', process.execPath, FAKE, ...agentArgs);
+  const proc = spawn(process.execPath, args, {
     stdio: ['pipe', 'pipe', 'inherit'],
+    env: { ...process.env, OPEN_LOG: openLog ?? '' },
   });
   const client = new Connection(proc.stdout, proc.stdin);
   const updates = [];
   const writes = [];
+  const dirty = new Map(); // path -> unsaved editor buffer contents
   client.onNotification('session/update', (p) => updates.push(p.update));
-  client.onRequest('fs/read_text_file', ({ path: p }) => ({ content: readFileSync(p, 'utf8') }));
+  client.onRequest('fs/read_text_file', ({ path: p }) => ({ content: dirty.get(p) ?? readFileSync(p, 'utf8') }));
   client.onRequest('fs/write_text_file', ({ path: p, content }) => {
     writes.push({ path: p, content, diskAtWrite: existsSync(p) ? readFileSync(p, 'utf8') : null });
     writeFileSync(p, content);
@@ -48,7 +63,7 @@ function setup({ fs = true, agentArgs = ['{prompt}'], extra = [] } = {}) {
     rmSync(cwd, { recursive: true, force: true });
     rmSync(backupDir, { recursive: true, force: true });
   };
-  return { cwd, backupDir, client, updates, writes, start, prompt, cleanup };
+  return { cwd, backupDir, client, updates, writes, dirty, start, prompt, cleanup };
 }
 
 const messages = (updates, kind = 'agent_message_chunk') =>
@@ -175,4 +190,67 @@ test('unknown session and relative cwd are rejected', async () => {
   } finally {
     t.cleanup();
   }
+});
+
+test('watch mode reviews changes made by other processes', async () => {
+  const logDir = mkdtempSync(path.join(tmpdir(), 'arb-open-'));
+  const openLog = path.join(logDir, 'opened.log');
+  const t = setup({ watch: true, extra: ['--interval', '100'], openLog });
+  const abs = (rel) => path.join(t.cwd, rel);
+  const writesTo = (rel) => t.writes.filter((w) => w.path === abs(rel));
+  try {
+    const { sessionId } = await t.start();
+    const turn = t.prompt(sessionId, 'start watching');
+    await waitFor(() => messages(t.updates).includes('Watching'), 'watch to start');
+
+    // An agent in another process edits a file -> routed through the editor for review.
+    writeFileSync(abs('edit.txt'), 'one\nTWO\n');
+    await waitFor(() => writesTo('edit.txt').length === 1, 'edit to be routed');
+    assert.equal(writesTo('edit.txt')[0].diskAtWrite, 'one\ntwo\n', 'baseline restored before the write');
+    assert.equal(readFileSync(abs('edit.txt'), 'utf8'), 'one\nTWO\n');
+
+    // ...and the file is opened in the editor at the first changed line.
+    await waitFor(() => existsSync(openLog) && readFileSync(openLog, 'utf8').includes(`${abs('edit.txt')}:2`), 'file to be opened');
+
+    // New file -> reviewable creation.
+    writeFileSync(abs('new.txt'), 'hello\n');
+    await waitFor(() => writesTo('new.txt').length === 1, 'creation to be routed');
+    assert.equal(writesTo('new.txt')[0].diskAtWrite, null);
+
+    // The editor rejects everything: file back at baseline, created file removed.
+    // These writes come from the editor and must not be reviewed again.
+    const before = t.writes.length;
+    writeFileSync(abs('edit.txt'), 'one\ntwo\n');
+    rmSync(abs('new.txt'));
+    await sleep(600);
+    assert.equal(t.writes.length, before, 'editor rejects are not re-reviewed');
+    assert.ok(!t.updates.some((u) => u.title === 'Delete new.txt'));
+
+    // Unsaved edits in the editor: the bridge must not touch the file until they're saved.
+    t.dirty.set(abs('edit.txt'), 'one\ntwo\nunsaved typing\n');
+    writeFileSync(abs('edit.txt'), 'one\nTHREE\n');
+    await sleep(600);
+    assert.equal(t.writes.length, before, 'no write while the buffer is dirty');
+    assert.equal(readFileSync(abs('edit.txt'), 'utf8'), 'one\nTHREE\n', 'disk untouched');
+    t.dirty.delete(abs('edit.txt'));
+    await waitFor(() => writesTo('edit.txt').some((w) => w.content === 'one\nTHREE\n'), 'retry after save');
+
+    // Deleting a baseline file is reported (with backup).
+    rmSync(abs('gone.txt'));
+    await waitFor(() => t.updates.some((u) => u.title === 'Delete gone.txt'), 'deletion report');
+
+    t.client.notify('session/cancel', { sessionId });
+    assert.equal((await turn).stopReason, 'cancelled');
+    assert.match(messages(t.updates), /Stopped watching/);
+  } finally {
+    t.cleanup();
+    rmSync(logDir, { recursive: true, force: true });
+  }
+});
+
+test('firstChangedLine', () => {
+  assert.equal(firstChangedLine('a\nb\nc\n', 'a\nB\nc\n'), 2);
+  assert.equal(firstChangedLine('a\n', 'a\nb\n'), 2);
+  assert.equal(firstChangedLine(null, 'x'), 1);
+  assert.equal(firstChangedLine('a\nb\n', 'a\n'), 2);
 });

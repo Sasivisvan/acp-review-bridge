@@ -42,7 +42,7 @@ test('ignore matcher', () => {
 test('decodeText detects binary and keeps BOM', () => {
   assert.equal(decodeText(Buffer.from([0x68, 0x00, 0x69])), null);
   assert.equal(decodeText(Buffer.from([0xff, 0xfe, 0xfd])), null);
-  assert.equal(decodeText(Buffer.from('﻿hi')), '﻿hi');
+  assert.equal(decodeText(Buffer.from('\ufeffhi')), '\ufeffhi');
 });
 
 for (const useGit of [true, false]) {

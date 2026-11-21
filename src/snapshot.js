@@ -106,7 +106,7 @@ export async function listFiles(root, isIgnored) {
   }
 }
 
-async function readEntry(root, rel, maxBytes) {
+export async function readEntry(root, rel, maxBytes) {
   const abs = path.join(root, rel);
   let st;
   try {
@@ -220,7 +220,7 @@ export async function diffSnapshot(root, before, { isIgnored, maxBytes = DEFAULT
   return changes;
 }
 
-function makeChange(rel, type, prev, cur, maxBytes) {
+export function makeChange(rel, type, prev, cur, maxBytes) {
   const beforeBuf = prev?.content ?? null;
   const afterBuf = cur?.content ?? null;
   const change = {
