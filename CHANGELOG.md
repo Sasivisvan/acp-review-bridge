@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **Watch mode** (`--watch`): review changes made by *any* process, such as an agent running in a terminal, while a watch thread is open in Zed. Editor-originated writes (Reject, our own writes, format-on-save) are recognised and not re-reviewed, and files with unsaved editor changes are never touched.
+- Changed files are opened in the editor automatically at the first changed line (`--open-with`, default `zeditor`/`zed`; `--no-open` to disable).
+- `--interval` option for the watch-mode polling interval.
+
 ## [0.1.0] - 2026-11-21
 
 ### Added

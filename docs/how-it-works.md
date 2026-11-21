@@ -67,6 +67,23 @@ If the client doesn't advertise `fs.writeTextFile` (or you pass `--no-review`), 
 
 ACP has no file-delete or binary-write method, so these changes stay as the agent left them and are reported in the thread. Deleted files are first copied to the backup directory (`$XDG_STATE_HOME/acp-review-bridge/backups/<timestamp>/<project>/<path>`).
 
+## Watch mode
+
+With `--watch`, there is no wrapped command. A prompt starts a long-running turn that polls the workspace (default every 700 ms):
+
+1. **Baseline**: when watching starts, every file is snapshotted. That's the "before" for the whole round.
+2. **Settle**: a file is processed only once its size and mtime have stayed the same for one full interval, so half-written files are never reviewed.
+3. **Classify** the settled content:
+   - equal to the baseline → nothing to review. This covers a **Reject** in the editor, or the agent undoing its own change.
+   - equal to the state we last handled → nothing new. This covers our own `fs/write_text_file`, including format-on-save.
+   - otherwise → route it with the same restore → sync → re-apply steps as run mode, against the **baseline**.
+4. **Dirty-buffer guard**: before touching a file, the bridge reads the editor's buffer. If it differs from disk (unsaved edits), the file is left alone and retried once it's saved.
+5. **Open**: each routed file is opened with `--open-with` (default `zeditor`/`zed`) at the first changed line, so it pops up in the editor.
+
+Partial rejects are safe. The file is then neither at the baseline nor at the last handled state, so it is routed again against the same baseline. That reproduces exactly the diff the editor already shows (Zed's action log keeps conflicting "user" edits out of its baseline), so the review state doesn't change.
+
+Watching relies on Zed keeping Keep / Reject available while a turn is running. Zed's thread view currently always enables them.
+
 ## Protocol details
 
 - Transport: newline-delimited JSON-RPC 2.0 on stdio. Stdout carries only protocol messages, and all logging goes to stderr.
@@ -78,7 +95,8 @@ ACP has no file-delete or binary-write method, so these changes stay as the agen
 | File | Role |
 | --- | --- |
 | `bin/acp-review-bridge.js` | CLI parsing, process lifecycle |
-| `src/bridge.js` | ACP agent: sessions, running the agent, review routing |
+| `src/bridge.js` | ACP agent: sessions, running the agent, review routing, opening files |
+| `src/watch.js` | Watch mode: polling, settle, classify, dirty-buffer guard |
 | `src/snapshot.js` | File discovery, ignore rules, snapshot and diff |
 | `src/jsonrpc.js` | JSON-RPC 2.0 peer over newline-delimited streams |
 | `src/text.js` | ANSI stripping, prompt flattening |

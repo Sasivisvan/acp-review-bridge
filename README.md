@@ -19,6 +19,14 @@ Many good coding agents (Aider, home-grown scripts, local-model tools, ...) only
  Zed highlights the change (green = added, red = removed) → Keep or Reject
 ```
 
+It has two modes:
+
+| Mode | You... | Good for |
+| --- | --- | --- |
+| **Watch** (`--watch`) | keep using your agent in the terminal, as usual | Claude Code on a subscription, Aider, any agent or script, even ones Zed can't launch |
+| **Run** (`-- <command>`) | type prompts in Zed's Agent Panel; the bridge runs the agent | One-shot CLI agents you want to drive from inside Zed |
+
+- ✅ **Watch mode:** any change made in the project by any process pops open in Zed with inline Keep / Reject
 - ✅ Works with **any** CLI agent that edits files: the prompt goes in as an argument or on stdin
 - ✅ Native Zed review: inline diffs, Keep / Reject, per-file and per-hunk
 - ✅ The baseline is the file **as it was right before the agent's turn**
@@ -35,7 +43,31 @@ Many good coding agents (Aider, home-grown scripts, local-model tools, ...) only
 - Zed with external-agent (ACP) support
 - Linux or macOS (Windows is untested)
 
-## Quick start
+## Quick start: watch mode (agent in your terminal)
+
+Use this when your agent runs in a terminal. For example, Claude Code on a Pro/Max subscription, where Zed would otherwise ask for an API key.
+
+**1.** Add this to Zed's settings (`zed: open settings`):
+
+```jsonc
+{
+  "agent_servers": {
+    "Watch changes": {
+      "type": "custom",
+      "command": "npx",
+      "args": ["-y", "github:Sasivisvan/acp-review-bridge", "--watch"]
+    }
+  }
+}
+```
+
+**2.** In Zed, open your project. In the Agent Panel, start a new thread with **Watch changes** and send any message (e.g. `go`). The bridge snapshots the project and starts watching.
+
+**3.** Work with your agent in a terminal as usual. Every file it changes **opens in Zed automatically** with the change highlighted (green = added, red = removed) and **Keep / Reject** buttons. You can review while the agent keeps working. Press **Stop** in the Agent Panel to end watching, and send another message to start a fresh round.
+
+Watch mode can't tell *who* changed a file, so your own edits saved from Zed are also shown for review: just Keep them. Files with unsaved edits in Zed are never touched.
+
+## Quick start: run mode
 
 **1. Get the bridge.** There's no install step: Zed can launch it straight from GitHub with `npx`. Or clone it:
 
@@ -86,6 +118,10 @@ Each prompt runs the agent once, non-interactively, in the project root. Files y
 
 | Option | Default | Description |
 | --- | --- | --- |
+| `--watch` |  | Watch mode: review changes made by any process (no agent command) |
+| `--interval <ms>` | `700` | Watch mode polling interval |
+| `--open-with <command>` | `zeditor` or `zed` if on PATH | Open each changed file with `<command> <path>:<line>` |
+| `--no-open` |  | Don't open changed files automatically |
 | `--name <title>` | `<command> (reviewed)` | Name shown in Zed |
 | `--next-turn-arg <arg>` |  | Extra arg for the 2nd+ prompt of a thread, inserted before `{prompt}` (repeatable) |
 | `--ignore <pattern>` |  | Extra ignore pattern: `dir/`, `*.ext` or `path/glob` (repeatable) |
@@ -121,7 +157,9 @@ Zed now records the change as an agent edit, against the pre-agent baseline. If 
 
 ## Limitations
 
-- The agent runs **once per prompt**, non-interactively. Interactive prompts inside the agent (y/n questions) aren't forwarded, so use the agent's "yes to all" or non-interactive flags.
+- **Watch mode:** if a file is reviewed, you **Keep** it, and the agent then edits the same file again, the earlier kept hunks show up again as well. The baseline is the snapshot taken when watching started. Stop and restart watching to reset the baseline.
+- **Watch mode:** edits you save from Zed itself are indistinguishable from an agent's and are shown for review too.
+- **Run mode:** the agent runs **once per prompt**, non-interactively. Interactive prompts inside the agent (y/n questions) aren't forwarded, so use the agent's "yes to all" or non-interactive flags.
 - Conversation memory between prompts depends on the agent (see `--next-turn-arg`).
 - Review happens **after** the agent finishes its turn, not edit by edit.
 - If you edit a file in Zed *while* the agent is working on the same file, your unsaved changes and the agent's can conflict.
