@@ -1,5 +1,7 @@
 # acp-review-bridge
 
+[![CI](https://github.com/Sasivisvan/acp-review-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/Sasivisvan/acp-review-bridge/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **Run any CLI coding agent inside [Zed](https://zed.dev) and review every file it changes with inline Keep / Reject diffs, the same experience as Zed's built-in agent, Cursor or Antigravity.**
 
 Many good coding agents (Aider, home-grown scripts, local-model tools, ...) only run in a terminal. When they edit your files you get no review step: the changes are just there. `acp-review-bridge` wraps such an agent in the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) so Zed can drive it from the Agent Panel, and it hands every edit to Zed as a reviewable change:
