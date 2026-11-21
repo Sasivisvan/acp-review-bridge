@@ -1,0 +1,22 @@
+# dependencies / build output
+node_modules/
+coverage/
+dist/
+
+# secrets — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+credentials*.json
+secrets*.json
+
+# editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.log
+npm-debug.log*

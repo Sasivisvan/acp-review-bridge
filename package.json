@@ -1,0 +1,40 @@
+{
+  "name": "acp-review-bridge",
+  "version": "0.1.0",
+  "description": "Run any CLI coding agent inside Zed (or any ACP client) and review every file it changes with inline Keep / Reject diffs.",
+  "type": "module",
+  "bin": {
+    "acp-review-bridge": "bin/acp-review-bridge.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "zed",
+    "acp",
+    "agent-client-protocol",
+    "ai",
+    "agent",
+    "code-review",
+    "diff",
+    "aider"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sasivisvan/acp-review-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Sasivisvan/acp-review-bridge/issues"
+  },
+  "homepage": "https://github.com/Sasivisvan/acp-review-bridge#readme",
+  "license": "MIT"
+}
